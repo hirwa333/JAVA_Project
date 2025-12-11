@@ -1,0 +1,297 @@
+package com.fueltracker; 
+
+import javax.swing.*;
+import javax.swing.table.AbstractTableModel;
+import java.awt.*;
+import java.awt.event.*;
+import java.sql.*;
+import java.util.ArrayList;
+import java.util.Date;
+import java.text.SimpleDateFormat;
+
+
+/**
+ * FuelTrackerApp
+ * Single-class Java Swing application for fuel tracking.
+ * Features:
+ * - Login for predefined users
+ * - Record fuel usage
+ * - View history in JTable
+ * - Calculate average fuel using PL/SQL function
+ * - Inserts audit log for each fuel entry
+ */
+public class FuelTrackerApp {
+
+    // ------------------ JDBC Connection ------------------
+    private static final String URL = "jdbc:oracle:thin:@//localhost:1521/xe"; // Oracle DB service
+    private static final String USER = "system";      // DB username
+    private static final String PASS = "Devoracle21"; // DB password
+
+    // Logged-in user info
+    private int userId;
+    private String fullname;
+
+    // GUI components
+    private JFrame loginFrame;
+    private JFrame dashboardFrame;
+    private JTextField usernameField, litresField, distanceField;
+    private JPasswordField passwordField;
+    private JTable table;
+    private ArrayList<FuelRecord> fuelList = new ArrayList<>();
+
+    // ------------------ MAIN ------------------
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> new FuelTrackerApp().showLogin());
+    }
+
+    // ------------------ Show Login Window ------------------
+    private void showLogin() {
+        loginFrame = new JFrame("Fuel Tracker Login");
+        loginFrame.setSize(350, 200);
+        loginFrame.setLocationRelativeTo(null);
+        loginFrame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+
+        JPanel panel = new JPanel(new GridLayout(3, 2, 10, 10));
+        panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        panel.add(new JLabel("Username:"));
+        usernameField = new JTextField();
+        panel.add(usernameField);
+
+        panel.add(new JLabel("Password:"));
+        passwordField = new JPasswordField();
+        panel.add(passwordField);
+
+        JButton loginBtn = new JButton("Login");
+        JButton exitBtn = new JButton("Exit");
+
+        loginBtn.addActionListener(e -> doLogin());
+        exitBtn.addActionListener(e -> System.exit(0));
+
+        panel.add(loginBtn);
+        panel.add(exitBtn);
+
+        loginFrame.add(panel);
+        loginFrame.setVisible(true);
+    }
+
+    // ------------------ Perform Login ------------------
+    private void doLogin() {
+        String username = usernameField.getText().trim();
+        String password = new String(passwordField.getPassword()).trim();
+
+        if (username.isEmpty() || password.isEmpty()) {
+            JOptionPane.showMessageDialog(loginFrame, "Enter username and password");
+            return;
+        }
+
+        try (Connection conn = DriverManager.getConnection(URL, USER, PASS);
+             Statement stmt = conn.createStatement()) {
+
+            // Using Statement for login (assignment requirement)
+            String sql = "SELECT user_id, fullname FROM users WHERE username='" + username + "' AND password='" + password + "'";
+            ResultSet rs = stmt.executeQuery(sql);
+
+            if (rs.next()) {
+                userId = rs.getInt("user_id");
+                fullname = rs.getString("fullname");
+                loginFrame.dispose();
+                showDashboard();
+            } else {
+                JOptionPane.showMessageDialog(loginFrame, "Invalid credentials");
+            }
+
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(loginFrame, "Database error: " + ex.getMessage());
+        }
+    }
+
+    // ------------------ Show Dashboard ------------------
+    private void showDashboard() {
+        dashboardFrame = new JFrame("Dashboard - " + fullname);
+        dashboardFrame.setSize(700, 500);
+        dashboardFrame.setLocationRelativeTo(null);
+        dashboardFrame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+
+        // Top panel for input and buttons
+        JPanel topPanel = new JPanel(new GridLayout(2, 4, 8, 8));
+        topPanel.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
+
+        topPanel.add(new JLabel("Litres used:"));
+        litresField = new JTextField();
+        topPanel.add(litresField);
+
+        topPanel.add(new JLabel("Distance (km):"));
+        distanceField = new JTextField();
+        topPanel.add(distanceField);
+
+        JButton addBtn = new JButton("Record Fuel");
+        JButton refreshBtn = new JButton("Refresh History");
+        JButton avgBtn = new JButton("Calculate Average Fuel");
+
+        addBtn.addActionListener(e -> insertFuel());
+        refreshBtn.addActionListener(e -> loadFuelHistory());
+        avgBtn.addActionListener(e -> calculateAverageFuel());
+
+        topPanel.add(addBtn);
+        topPanel.add(refreshBtn);
+        topPanel.add(avgBtn);
+
+        dashboardFrame.add(topPanel, BorderLayout.NORTH);
+
+        // Table for fuel history
+        table = new JTable();
+        dashboardFrame.add(new JScrollPane(table), BorderLayout.CENTER);
+
+        loadFuelHistory();
+        dashboardFrame.setVisible(true);
+    }
+
+    // ------------------ Insert Fuel Record ------------------
+    private void insertFuel() {
+        String litresText = litresField.getText().trim();
+        String distanceText = distanceField.getText().trim();
+
+        double litres, distance;
+        try {
+            litres = Double.parseDouble(litresText);
+            distance = Double.parseDouble(distanceText);
+        } catch (NumberFormatException ex) {
+            JOptionPane.showMessageDialog(dashboardFrame, "Enter valid numeric values");
+            return;
+        }
+
+        String insertSql = "INSERT INTO fuel_usage (usage_id, user_id, litres, distance, usage_date) " +
+                "VALUES (fuel_usage_seq.NEXTVAL, ?, ?, ?, ?)";
+        String auditSql = "INSERT INTO audit_logs (audit_id, user_id, action) " +
+                "VALUES (audit_logs_seq.NEXTVAL, ?, ?)";
+
+        try (Connection conn = DriverManager.getConnection(URL, USER, PASS)) {
+            conn.setAutoCommit(false);
+            try (PreparedStatement ps = conn.prepareStatement(insertSql);
+                 PreparedStatement aps = conn.prepareStatement(auditSql)) {
+
+                // Insert fuel record
+                ps.setInt(1, userId);
+                ps.setDouble(2, litres);
+                ps.setDouble(3, distance);
+                ps.setDate(4, new java.sql.Date(new java.util.Date().getTime()));
+                ps.executeUpdate();
+
+                // Insert audit log
+                aps.setInt(1, userId);
+                aps.setString(2, "Inserted fuel record: litres=" + litres + ", distance=" + distance);
+                aps.executeUpdate();
+
+                conn.commit();
+                litresField.setText("");
+                distanceField.setText("");
+                JOptionPane.showMessageDialog(dashboardFrame, "Fuel recorded successfully");
+                loadFuelHistory();
+
+            } catch (SQLException ex) {
+                conn.rollback();
+                ex.printStackTrace();
+            }
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(dashboardFrame, "Database error: " + ex.getMessage());
+        }
+    }
+
+    // ------------------ Load Fuel History ------------------
+    private void loadFuelHistory() {
+        fuelList.clear();
+        String sql = "SELECT usage_date, litres, distance FROM fuel_usage WHERE user_id = ? ORDER BY usage_date DESC";
+
+        try (Connection conn = DriverManager.getConnection(URL, USER, PASS);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+
+            ps.setInt(1, userId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Date date = rs.getDate("usage_date");
+                    double litres = rs.getDouble("litres");
+                    double distance = rs.getDouble("distance");
+                    fuelList.add(new FuelRecord(litres, distance, date));
+                }
+            }
+
+            FuelTableModel model = new FuelTableModel(fuelList);
+            table.setModel(model);
+
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(dashboardFrame, "Error loading history: " + ex.getMessage());
+        }
+    }
+
+    // ------------------ Calculate Average Fuel (CallableStatement) ------------------
+    private void calculateAverageFuel() {
+        String call = "{ ? = call calculateAverageFuel(?) }";
+        try (Connection conn = DriverManager.getConnection(URL, USER, PASS);
+             CallableStatement cs = conn.prepareCall(call)) {
+
+            cs.registerOutParameter(1, Types.NUMERIC);
+            cs.setInt(2, userId);
+            cs.execute();
+
+            double avg = cs.getDouble(1);
+            JOptionPane.showMessageDialog(dashboardFrame,
+                    String.format("Average litres for %s: %.2f litres", fullname, avg));
+
+        } catch (SQLException ex) {
+            ex.printStackTrace();
+            JOptionPane.showMessageDialog(dashboardFrame, "Error calculating average: " + ex.getMessage());
+        }
+    }
+
+    // ------------------ Inner Class: FuelRecord ------------------
+    class FuelRecord {
+        private double litres;
+        private double distance;
+        private Date date;
+
+        public FuelRecord(double litres, double distance, Date date) {
+            this.litres = litres;
+            this.distance = distance;
+            this.date = date;
+        }
+
+        public double getLitres() { return litres; }
+        public double getDistance() { return distance; }
+        public Date getDate() { return date; }
+    }
+
+    // ------------------ Inner Class: Table Model ------------------
+    class FuelTableModel extends AbstractTableModel {
+        private final ArrayList<FuelRecord> records;
+        private final String[] cols = {"Date", "Litres", "Distance"};
+        private final SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd");
+
+        public FuelTableModel(ArrayList<FuelRecord> records) {
+            this.records = records;
+        }
+
+        @Override
+        public int getRowCount() { return records.size(); }
+
+        @Override
+        public int getColumnCount() { return cols.length; }
+
+        @Override
+        public String getColumnName(int column) { return cols[column]; }
+
+        @Override
+        public Object getValueAt(int rowIndex, int columnIndex) {
+            FuelRecord r = records.get(rowIndex);
+            switch (columnIndex) {
+                case 0: return sdf.format(r.getDate());
+                case 1: return r.getLitres();
+                case 2: return r.getDistance();
+                default: return "";
+            }
+        }
+    }
+}
